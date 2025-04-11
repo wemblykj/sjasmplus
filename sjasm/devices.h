@@ -29,6 +29,7 @@
 bool IsZXSpectrumDevice(const char *name);
 bool IsAmstradCPCDevice(const char* name);
 bool IsAmstradPLUSDevice(const char* name);
+bool IsSamCoupeDevice(const char* name);
 bool SetDevice(const char *const_id, const aint ramtop = 0);
 const char* GetDeviceName();
 

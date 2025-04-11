@@ -122,6 +122,7 @@ struct SAlignSafeCast {
 #include "sjio.h"
 #include "io_cpc.h"
 #include "io_err.h"
+#include "io_mgt.h"
 #include "io_snapshots.h"
 #include "io_tape.h"
 #include "io_trd.h"

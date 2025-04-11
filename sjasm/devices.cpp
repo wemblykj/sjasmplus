@@ -54,6 +54,16 @@ bool IsAmstradCPCDevice(const char* name) {
 	return true;
 }
 
+bool IsSamCoupeDevice(const char* name) {
+	if (nullptr == name) return false;
+	if (strcmp(name, "SAMCOUPE256") &&
+		strcmp(name, "SAMCOUPE512"))
+	{
+		return false;
+	}
+	return true;
+}
+
 bool IsAmstradPLUSDevice(const char* name) {
 	if (nullptr == name) return false;
 	if (strcmp(name, "AMSTRADCPCPLUS"))
@@ -197,6 +207,20 @@ static void DeviceAmstradCPCPLUS(CDevice** dev, CDevice* parent, aint ramtop) {
 	initRegularSlotDevice(*dev, 0x4000, 4, 32, initialPages);	// 32*16kiB = 512MiB (maximum cartridge size)
 }
 
+static void DeviceSamCoupe256(CDevice** dev, CDevice* parent, aint ramtop) {
+	if (ramtop) WarningById(W_NO_RAMTOP);
+	*dev = new CDevice("SAMCOUPE256", parent);
+	const int initialPages[] = { 15, 0, 1, 2 };
+	initRegularSlotDevice(*dev, 0x4000, 4, 16, initialPages);
+}
+
+static void DeviceSamCoupe512(CDevice** dev, CDevice* parent, aint ramtop) {
+	if (ramtop) WarningById(W_NO_RAMTOP);
+	*dev = new CDevice("SAMCOUPE512", parent);
+	const int initialPages[] = { 31, 0, 1, 2 };
+	initRegularSlotDevice(*dev, 0x4000, 4, 32, initialPages);
+}
+
 static bool SetUserDefinedDevice(const char* id, CDevice** dev, CDevice* parent, aint ramtop) {
 	auto findIt = std::find_if(
 		DefDevices.begin(), DefDevices.end(),
@@ -258,6 +282,10 @@ bool SetDevice(const char *const_id, const aint ramtop) {
 				DeviceAmstradCPC6128(dev, parent, ramtop);
 			} else if (cmphstr(id, "amstradcpcplus")) {
 				DeviceAmstradCPCPLUS(dev, parent, ramtop);
+			} else if (cmphstr(id, "samcoupe256")) {
+				DeviceSamCoupe256(dev, parent, ramtop);
+			} else if (cmphstr(id, "samcoupe512")) {
+				DeviceSamCoupe512(dev, parent, ramtop);
 			} else if (!SetUserDefinedDevice(id, dev, parent, ramtop)) {
 				return false;
 			}
