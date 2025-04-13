@@ -53,38 +53,38 @@
 
 namespace
 {
-	void reportError(const char* message, const char* badValueMessage, EStatus status = FATAL) {
+	void reportError(std::string_view message, std::string_view badValueMessage, EStatus status = FATAL) {
 		std::string errorMessage("[SAVEMGT] ");
 		errorMessage += message;
-		Error(errorMessage.c_str(), badValueMessage, status);
+		Error(errorMessage.c_str(), std::string(badValueMessage).c_str(), status);
 	}
 
 	// report error and close the file
-	void reportFileError(const std::filesystem::path& fname, const char* message, EStatus status) {
-		reportError(message, fname.string().c_str(), status);
+	void reportFileError(const std::filesystem::path& fname, std::string_view message, EStatus status) {
+		reportError(message, fname.string(), status);
 	}
 
-	void seekError(const std::filesystem::path& fname, const char* message = nullptr) {
+	void seekError(const std::filesystem::path& fname, std::string_view message = nullptr) {
 		std::string errorMessage("Seek error");
-		if (message) {
+		if (!message.empty()) {
 			errorMessage += ": ";
 			errorMessage += message;
 		}
-		reportFileError(fname, errorMessage.c_str(), IF_FIRST);
+		reportFileError(fname, errorMessage, IF_FIRST);
 	}
 
-	void readError(const std::filesystem::path& fname, const char* message = nullptr) {
+	void readError(const std::filesystem::path& fname, std::string_view message = nullptr) {
 		std::string errorMessage("Read error");
-		if (message) {
+		if (!message.empty()) {
 			errorMessage += ": ";
 			errorMessage += message;
 		}
 		reportFileError(fname, message, IF_FIRST);
 	}
 
-	void writeError(const std::filesystem::path& fname, const char* message = nullptr) {
+	void writeError(const std::filesystem::path& fname, std::string_view message = nullptr) {
 		std::string errorMessage("Write error");
-		if (message) {
+		if (!message.empty()) {
 			errorMessage += ": ";
 			errorMessage += message;
 		}
@@ -187,10 +187,46 @@ namespace MGT {
 	public:
 		virtual ~DiskInterface() = default;
 
+		/// <summary>
+		/// Read a single track from the disk source
+		/// </summary>
+		/// <param name="trackNo"></param>
+		/// <param name="track"></param>
+		/// <returns></returns>
 		virtual Result ReadTrack(byte trackNo, PlusD::Track& track) = 0;
+
+		/// <summary>
+		/// Write a single track to the disk source
+		/// </summary>
+		/// <param name="trackNo"></param>
+		/// <param name="track"></param>
+		/// <returns></returns>
 		virtual Result WriteTrack(byte trackNo, const PlusD::Track& track) = 0;
+
+		/// <summary>
+		/// Read a single sector from the disk source
+		/// </summary>
+		/// <param name="trackNo"></param>
+		/// <param name="sectorNo"></param>
+		/// <param name="sector"></param>
+		/// <returns></returns>
 		virtual Result ReadSector(byte trackNo, byte sectorNo, PlusD::Sector& sector) = 0;
+
+		/// <summary>
+		/// Write a single sector to the disk source
+		/// </summary>
+		/// <param name="trackNo"></param>
+		/// <param name="sectorNo"></param>
+		/// <param name="sector"></param>
+		/// <returns></returns>
 		virtual Result WriteSector(byte trackNo, byte sectorNo, const PlusD::Sector& sector) = 0;
+
+		/// <summary>
+		/// Return a displayable context for associated errors
+		/// </summary><
+		/// <remarks>For example the name of a disk image file</remarks>
+		/// <returns></returns>
+		virtual std::string GetErrorContext() = 0;
 	};
 
 	using DiskInterfacePtr = std::unique_ptr<DiskInterface>;
@@ -203,29 +239,26 @@ namespace MGT {
 			assert(file != nullptr);
 		}
 
-		Result ReadTrack(byte trackNo, PlusD::Track& track) override
-		{
-			
+		Result ReadTrack(byte trackNo, PlusD::Track& track) override {
 			assert(trackNo < PlusD::TRACKS_PER_DISK);
 
 			int logicalTrack = MapToImageTrack(trackNo);
 			int fileOffset = logicalTrack * PlusD::TRACK_SIZE;
 
 			if (fseek(file, fileOffset, SEEK_SET) != 0) {
-				seekError(filePath);
+				seekError(GetErrorContext());
 				return Result::Error;
 			}
 
 			if (fread(track.bytes, 1, PlusD::TRACK_SIZE, file) != PlusD::TRACK_SIZE) {
-				readError(filePath, "failed to read track");
+				readError(GetErrorContext(), "failed to read track");
 				return Result::Error;
 			}
 
 			return Result::Success;
 		}
 
-		Result WriteTrack(byte trackNo, const PlusD::Track& track) override
-		{
+		Result WriteTrack(byte trackNo, const PlusD::Track& track) override {
 			assert(file != nullptr);
 			assert(trackNo < PlusD::TRACKS_PER_DISK);
 
@@ -233,25 +266,24 @@ namespace MGT {
 			int om_fileset = logicalTrack * PlusD::TRACK_SIZE;
 
 			if (fseek(file, om_fileset, SEEK_SET) != 0) {
-				seekError(filePath);
+				seekError(GetErrorContext());
 				return Result::Error;
 			}
 
 			if (fwrite(track.bytes, 1, PlusD::TRACK_SIZE, file) != PlusD::TRACK_SIZE) {
-				writeError(filePath, "failed to write track");
+				writeError(GetErrorContext(), "failed to write track");
 				return Result::Error;
 			}
 
 			if (fflush(file) != 0) {
-				writeError(filePath, "failed to flush file stream");
+				writeError(GetErrorContext(), "failed to flush file stream");
 				return Result::Error;
 			}
 
 			return Result::Success;
 		}
 
-		Result ReadSector(byte trackNo, byte sectorNo, PlusD::Sector& sector) override
-		{
+		Result ReadSector(byte trackNo, byte sectorNo, PlusD::Sector& sector) override {
 			assert(trackNo < 160 && sectorNo < 10);
 
 			int logicalTrack = MapToImageTrack(trackNo);
@@ -260,20 +292,19 @@ namespace MGT {
 			om_fileset += sectorNo * PlusD::SECTOR_SIZE;
 
 			if (fseek(file, om_fileset, SEEK_SET) != 0) {
-				seekError(filePath);
+				seekError(GetErrorContext());
 				return Result::Error;
 			}
 
 			if (fread(sector.bytes, 1, PlusD::SECTOR_SIZE, file) != PlusD::SECTOR_SIZE) {
-				readError(filePath, "failed to read sector");
+				readError(GetErrorContext(), "failed to read sector");
 				return Result::Error;
 			}
 
 			return Result::Success;
 		}
 
-		Result WriteSector(byte trackNo, byte sectorNo, const PlusD::Sector& sector) override
-		{
+		Result WriteSector(byte trackNo, byte sectorNo, const PlusD::Sector& sector) override {
 			assert(file != nullptr);
 			assert(trackNo < 160 && sectorNo < 10);
 
@@ -283,27 +314,30 @@ namespace MGT {
 			om_fileset += sectorNo * PlusD::SECTOR_SIZE;
 
 			if (fseek(file, om_fileset, SEEK_SET) != 0) {
-				seekError(filePath);
+				seekError(GetErrorContext());
 				return Result::Error;
 			}
 
 			if (fwrite(sector.bytes, 1, PlusD::SECTOR_SIZE, file) != PlusD::SECTOR_SIZE) {
-				writeError(filePath, "failed to write sector");
+				writeError(GetErrorContext(), "failed to write sector");
 				return Result::Error;
 			}
 
 			if (fflush(file) != 0) {
-				writeError(filePath, "failed to flush file stream");
+				writeError(GetErrorContext(), "failed to flush file stream");
 				return Result::Error;
 			}
 
 			return Result::Success;
 		}
 
+		std::string GetErrorContext() override {
+			return filePath.filename().string();
+		}
+
 	private:
 
-		static byte MapToImageTrack(byte track)
-		{
+		static byte MapToImageTrack(byte track) {
 			assert(track < 160);
 
 			// MGT disks are interleaved, so we need to convert the track number
@@ -414,7 +448,6 @@ namespace MGT {
 
 	namespace SAMDOS
 	{
-		
 		static constexpr int TRACKS_PER_DIRECTORY = 4;
 		static constexpr int SAMDOS_SIZE = 10000UL;
 		static const byte* GetSAMDOSImage();
@@ -577,7 +610,7 @@ namespace MGT {
 			DirectoryEntry() {}
 		};
 
-		struct DirectoryDescriptor {
+		struct DirectorySlot {
 			byte trackNo;
 			byte sectorNo;
 			byte partition;                  // 0 or 1
@@ -642,10 +675,14 @@ namespace MGT {
 		};
 
 		struct LogicalSector {
-			byte data[510];
-			byte nextTrack;
-			byte nextSector;
-			PlusD::Sector rawSector;
+			union {
+				struct {
+					byte data[510];
+					byte nextTrack;
+					byte nextSector;
+				};
+				PlusD::Sector rawSector;
+			};
 
 			LogicalSector() : rawSector() {}
 		};
@@ -682,6 +719,130 @@ namespace MGT {
 		};
 #pragma pack(pop)
 
+		struct SectorAllocation {
+			byte trackNo;
+			byte sectorNo;
+		};
+
+		using SectorAllocationList = std::vector<SectorAllocation>;
+
+		static class SAMDOSHelper {
+		public:
+			static void GetPageAndOffset(int address, byte& page, word& offset)
+			{
+				// TODO: may not be correct if start address < 16384
+				assert(address >= 16384);
+
+				page = static_cast<byte>((address >> 14) - 1);
+				offset = static_cast<word_le_t>(address & 0x4000);
+			}
+
+			static void GetPageAndOffset(int address, page_bits& pageBits, word_le_t& offset)
+			{
+				byte page;
+				GetPageAndOffset(address, page, offset);
+				pageBits.page = page;
+			}
+
+			static autorun GetExecutionAddress(FileType fileType, int startaddr) {
+				autorun executionAddress;
+
+				switch (fileType) {
+				case FileType::Code:
+					GetPageAndOffset(startaddr, executionAddress.code.page, executionAddress.code.offset);
+					break;
+				case FileType::BASIC:
+					executionAddress.basic.lineNumber = static_cast<word_le_t>(startaddr);
+					executionAddress.basic.autorun = startaddr != 0xFFFF ? AutorunType::Autorun : AutorunType::None;
+					break;
+				case FileType::Erased:
+				case FileType::DIM:
+				case FileType::STR:
+				case FileType::Screen:
+				default:
+					break;
+				}
+				return executionAddress;
+			}
+
+			/// <summary>
+			/// Combine the given sector address map with the master sector address map 
+			/// </summary>
+			/// <remarks>The master sector address map is essentially bitwise or'd with given sector address map</remarks>
+			/// <param name="target">The set into which sourceSet will be combined</param>
+			/// <param name="source">The set to be combined</param>
+			static void CombineSectorAddressMap(sector_address_map& target, const sector_address_map& source) {
+				for (int i = 0; i < sizeof(sector_address_map::bytes); ++i)
+					target.bytes[i] |= source.bytes[i];
+			}
+
+			/// <summary>
+			/// Subtract the sector address map from the master sector address map 
+			/// </summary>
+			/// <remarks>The master sector address map is essentially bitwise and'd against given sector address map</remarks>
+			/// <param name="target">The set from which sourceSet will be subtracted</param>
+			/// <param name="source">The set to be subtracted</param>
+			static void SubtractSectorAddressMap(sector_address_map& target, const sector_address_map& source) {
+				for (int i = 0; i < sizeof(sector_address_map::bytes); ++i)
+					target.bytes[i] &= source.bytes[i];
+			}
+
+			static Result FindFreeSectors(const sector_address_map& sam, int numSectors, SectorAllocationList& allocationList) {
+				byte currentTrackNo = 4;	// first free sector is in track four
+				byte currentSectorNo = 0;
+
+				for (int i = 0; i < sizeof(sector_address_map::bytes) && numSectors > 0; ++i) {
+					byte currentByte = sam.bytes[i];
+
+					if (currentByte == 0xFF) {
+						// there are no free sectors represented by this byte
+
+						// skip eight sectors
+						currentSectorNo += 8;
+
+						// perform carry
+						if (currentSectorNo >= 10) {
+							currentSectorNo %= 10;
+							++currentTrackNo;
+						}
+
+						continue;
+					}
+
+					// check each bit - bit 0 of the first byte is allocated to track 4	sector 1 [^1]
+					for (int j = 0; j < 8 && numSectors > 0; ++j) {
+						if ((currentByte & 0x01) == 0x00) {
+							byte trackNo;
+							
+							allocationList.emplace_back<SectorAllocation>({ currentTrackNo, currentSectorNo });
+							--numSectors;
+						}
+						currentByte >>= 1;
+
+						if (++currentSectorNo == 10) {
+							currentSectorNo = 0;
+							++currentTrackNo;
+						}
+					}
+				}
+
+				return numSectors == 0 ? Result::Success : Result::Error;
+			}
+
+			static Result AllocateSectors(const SectorAllocationList& allocationList, sector_address_map& sam) {
+				for (const auto& sectorAllocation : allocationList) {
+					// TODO: calculate byte offset from allocation list
+					const int allocatedSectorNo = (sectorAllocation.trackNo - 4) * PlusD::SECTORS_PER_TRACK + sectorAllocation.sectorNo;
+					const int byteNo = allocatedSectorNo >> 3;
+					const int bitNo = allocatedSectorNo % 8;
+
+					sam.bytes[byteNo] |= 1 << bitNo;
+				}
+
+				return Result::Success;
+			}
+		};
+
 		/// <summary>
 		/// DOS storage implementation for writing to SAMDOS formatted disks.
 		/// </summary>
@@ -700,64 +861,75 @@ namespace MGT {
 			}
 
 		private:
-			using DirectoryDescriptorList = std::vector<DirectoryDescriptor>;
+			using DirectorySlotList = std::vector<DirectorySlot>;
 
-			Result FindSlots(DirectoryDescriptorList& entries, std::function<bool(const DirectoryEntry&)> predicate)
+			Result ForEachSlot(std::function<bool(const DirectorySlot&)> fn)
 			{
+				bool cont = true;
 				DirectoryTrack track;
-				for (byte trackNo = 0; trackNo < TRACKS_PER_DIRECTORY; ++trackNo) {
+				for (byte trackNo = 0; trackNo < TRACKS_PER_DIRECTORY && cont; ++trackNo) {
 					if (GetDiskInterface().ReadTrack(trackNo, track.rawTrack) != Result::Success) {
 						return Result::Error;
 					}
 
-					for (byte i = 0; i < 20; ++i) {
+					for (byte i = 0; i < 20 && cont; ++i) {
 						const DirectoryEntry& entry = track.entries[i];
 
-						if (predicate(entry)) {
-							const byte sectorNo = static_cast<byte>(i >> 1);
-							const byte partition = static_cast<byte>(i % 2);
+						const byte sectorNo = static_cast<byte>(i >> 1);
+						const byte partition = static_cast<byte>(i % 2);
 
-							entries.emplace_back(DirectoryDescriptor{ trackNo, sectorNo, partition, entry });
-						}
+						DirectorySlot slot({ trackNo , sectorNo, partition, entry });
+
+						cont = fn(slot);
 					}
 				}
 
-				return entries.empty() ? Result::NotFound : Result::Success;
+				return Result::Success;
 			}
 
-			Result FindFirstSlot(DirectoryDescriptor& descriptor, std::function<bool(const DirectoryEntry&)> predicate)
+			Result FindSlots(DirectorySlotList& entries, std::function<bool(const DirectoryEntry&)> predicate)
 			{
-				DirectoryTrack track;
-				for (byte trackNo = 0; trackNo < TRACKS_PER_DIRECTORY; ++trackNo) {
-					if (GetDiskInterface().ReadTrack(trackNo, track.rawTrack) != Result::Success) {
-						return Result::Error;
+				Result result = ForEachSlot([&entries, &predicate](const auto& slot) {
+					if (predicate(slot.entry)) {
+						entries.emplace_back(slot);
 					}
+					return true;
+					});
 
-					for (byte i = 0; i < 20; ++i) {
-						const DirectoryEntry& entry = track.entries[i];
+				if (result != Result::Success)
+					return result;
 
-						if (predicate(entry)) {
-							const byte sectorNo = static_cast<byte>(i >> 1);
-							const byte partition = static_cast<byte>(i % 2);
-
-							descriptor = { trackNo, sectorNo, partition, entry };
-
-							return Result::Success;
-						}
-					}
-				}
-
-				return Result::NotFound;
+				return entries.empty() ? Result::NotFound : Result::Success;	
 			}
 
-			Result FindEmptySlot(DirectoryDescriptor& descriptor) {
+			Result FindFirstSlot(DirectorySlot& slot, std::function<bool(const DirectoryEntry&)> predicate)
+			{
+				Result findResult = Result::NotFound;
+
+				Result result = ForEachSlot([&slot, &predicate, &findResult](const auto& currentSlot) {
+						if (predicate(currentSlot.entry)) {
+							slot = currentSlot;
+							findResult = Result::Success;
+							return false;
+						}
+
+						return true;
+					});
+
+				if (result != Result::Success)
+					return result;
+
+				return findResult;
+			}
+
+			Result FindEmptySlot(DirectorySlot& descriptor) {
 				return FindFirstSlot(descriptor, [](const DirectoryEntry& entry) {
 					const bool isEmpty = entry.name[0] == 0x00;
 					return isEmpty;
 					});
 			}
 
-			Result FindErasedSlot(DirectoryDescriptor& descriptor) {
+			Result FindErasedSlot(DirectorySlot& descriptor) {
 				return FindFirstSlot(descriptor, [](const DirectoryEntry& entry) {
 					const bool isEmpty = entry.name[0] == 0x00;
 					const bool isErased = entry.typeStatus.fileType == FileType::Erased && !isEmpty;
@@ -766,7 +938,7 @@ namespace MGT {
 					});
 			}
 
-			Result FindFreeSlot(DirectoryDescriptor& descriptor) {
+			Result FindFreeSlot(DirectorySlot& descriptor) {
 				// prioritise empty slots over erased files
 				if (FindEmptySlot(descriptor) != Result::Success) {
 					// cannot find an empty slot, so try to find an erased slot
@@ -778,7 +950,7 @@ namespace MGT {
 				return Result::Success;
 			}
 
-			Result FindFileSlot(const char* name, DirectoryDescriptor& descriptor) {
+			Result FindFileSlot(const char* name, DirectorySlot& descriptor) {
 				const int NameLen = sizeof(descriptor.entry.name);
 				char paddedName[NameLen + 1];
 				snprintf(paddedName, sizeof(paddedName), "%-*s", NameLen, name);
@@ -788,7 +960,7 @@ namespace MGT {
 					});
 			}
 
-			Result ReadDirectorySlots(DirectoryDescriptorList& entries, ReadDirectoryFlags flags = ReadDirectoryFlags::Active) {
+			Result ReadDirectorySlots(DirectorySlotList& entries, ReadDirectoryFlags flags = ReadDirectoryFlags::Active) {
 				const bool allowActive = (flags & ReadDirectoryFlags::Active) == ReadDirectoryFlags::Active;
 				const bool allowEmpty = (flags & ReadDirectoryFlags::Empty) == ReadDirectoryFlags::Empty;
 				const bool allowErased = (flags & ReadDirectoryFlags::Erased) == ReadDirectoryFlags::Erased;
@@ -805,7 +977,7 @@ namespace MGT {
 					});
 			}
 
-			Result WriteDirectorySlots(const DirectoryDescriptorList& entries) {
+			Result WriteDirectorySlots(const DirectorySlotList& entries) {
 				// ensure all entries are consecutive
 				/* TODO: problems getting this to compile and using a container of shared_ptr did not seem to help
 				std::sort(entries.begin(), entries.end(), [](const DirectoryDescriptor& a, const DirectoryDescriptor& b) {
@@ -819,7 +991,7 @@ namespace MGT {
 
 				DirectorySector sector;
 				for (const auto& entry : entries) {
-					const DirectoryDescriptor& descriptor = entry;
+					const DirectorySlot& descriptor = entry;
 
 					// check that the entries are in order
 					assert(
@@ -874,60 +1046,41 @@ namespace MGT {
 				return Result::Success;
 			}
 
-			Result WriteDirectorySlot(const DirectoryDescriptor& slot) {
-				DirectoryDescriptorList entries = { slot };
+			Result WriteDirectorySlot(const DirectorySlot& slot) {
+				DirectorySlotList entries = { slot };
 				return WriteDirectorySlots(entries);
 			}
-
-			static void GetPageAndOffset(int address, byte& page, word& offset)
-			{
-				// TODO: may not be correct if start address < 16384
-				assert(address >= 16384);
-
-				page = static_cast<byte>((address >> 14) - 1);
-				offset = static_cast<word_le_t>(address & 0x4000);
-			}
-
-			static void GetPageAndOffset(int address, page_bits& pageBits, word_le_t& offset)
-			{
-				byte page;
-				GetPageAndOffset(address, page, offset);
-				pageBits.page = page;
-			}
-
-			static autorun GetExecutionAddress(FileType fileType, int startaddr) {
-				autorun executionAddress;
-
-				switch (fileType) {
-				case FileType::Code:
-					GetPageAndOffset(startaddr, executionAddress.code.page, executionAddress.code.offset);
-					break;
-				case FileType::BASIC:
-					executionAddress.basic.lineNumber = static_cast<word_le_t>(startaddr);
-					executionAddress.basic.autorun = startaddr != 0xFFFF ? AutorunType::Autorun : AutorunType::None;
-					break;
-				case FileType::Erased:
-				case FileType::DIM:
-				case FileType::STR:
-				case FileType::Screen:
-				default:
-					break;
-				}
-				return executionAddress;
-			}
-
+	
 			Result WriteFile(
 				const std::string& fileName,
 				FileType fileType, const byte* buf, word length, word memaddr, word startaddr) {
-				DirectoryDescriptor descriptor;
+				DirectorySlot descriptor;
 
 				if (FindFileSlot(fileName.c_str(), descriptor) != Result::Success) {
 					if (FindFreeSlot(descriptor) != Result::Success) {
-						Error("[SAVEMGT] disk is full.");
+						reportError("directory is full.", GetDiskInterface().GetErrorContext());
 
 						return Result::Error;
 					}
 				}
+
+				int numSectors = (length + (sizeof(LogicalSector::data) - 1)) / sizeof(LogicalSector::data);
+				
+				SectorAllocationList sal;
+				if (SAMDOSHelper::FindFreeSectors(GetSectorAddressMap(), numSectors, sal) != Result::Success) {
+					reportError("disk is full.", GetDiskInterface().GetErrorContext());
+
+					return Result::Error;
+				}
+
+				WriteData(buf, length, sal);
+
+				//
+				// write directory entry
+
+				descriptor.entry.trackNo = sal[0].trackNo;
+				descriptor.entry.sectorNo = sal[0].sectorNo;
+				descriptor.entry.sectorsUsed = sal.size();
 
 				descriptor.entry.typeStatus.fileType = fileType;
 
@@ -936,14 +1089,84 @@ namespace MGT {
 				snprintf(paddedName, sizeof(paddedName), "%-*s", NameLen, fileName.c_str());
 				memcpy(descriptor.entry.name, paddedName, NameLen);
 
-				GetPageAndOffset(memaddr, descriptor.entry.startPageNo, descriptor.entry.pageOffset);
+				SAMDOSHelper::GetPageAndOffset(memaddr, descriptor.entry.startPageNo, descriptor.entry.pageOffset);
 
-				descriptor.entry.executionAddress = GetExecutionAddress(fileType, startaddr);
+				descriptor.entry.executionAddress = SAMDOSHelper::GetExecutionAddress(fileType, startaddr);
+
+				SAMDOSHelper::AllocateSectors(sal, descriptor.entry.sectorAddressMap);
 
 				WriteDirectorySlot(descriptor);
 
+				// update master sector address map
+				SAMDOSHelper::AllocateSectors(sal, GetSectorAddressMap());
+
 				return Result::Success;
 			}
+
+			Result WriteData(const byte* buf, word length, SectorAllocationList sal) {
+				const byte* bufPtr = buf;
+				word remaining = length;
+				auto salIt = sal.cbegin();
+
+				while (remaining > 0) {
+					byte trackNo = salIt->trackNo;
+					byte sectorNo = salIt->sectorNo;
+
+					word numBytes = std::min<word>(remaining, 510);
+
+					LogicalSector sector;
+
+					memcpy(sector.data, bufPtr, numBytes);
+
+					if (++salIt != sal.cend()) {
+						sector.nextTrack = salIt->trackNo;
+						sector.nextSector = salIt->sectorNo;
+					}
+
+					if (GetDiskInterface().WriteSector(trackNo, sectorNo, sector.rawSector) != Result::Success) {
+						return Result::Error;
+					}
+
+					bufPtr += numBytes;
+					remaining -= numBytes;
+				}
+
+				return Result::Success;
+			}
+
+		private:
+			/// <summary>
+			/// Get the master sector address map for the disk
+			/// </summary>
+			/// <remarks>The master sector address map is constructed from the disk's directory, on first request, and
+			/// synchronised wiith further disk operations</remarks>
+			/// <returns>The disk's sector address map</returns>
+			sector_address_map& GetSectorAddressMap() {
+				if (masterSectorAddressMap == nullptr) {
+					masterSectorAddressMap = std::move(GenerateSectorAddressMap());
+				}
+
+				return *masterSectorAddressMap;
+			}
+
+			/// <summary>
+			/// Generate the master sector address map from all valid directory entries
+			/// </summary>
+			/// <param name=""></param>
+			std::unique_ptr<sector_address_map> GenerateSectorAddressMap() {
+				auto sectorAddressMap = std::make_unique<sector_address_map>();
+
+				Result result = ForEachSlot([&sectorAddressMap](const auto& slot) {
+					const sector_address_map slotSectorAddressMap = slot.entry.sectorAddressMap;
+					SAMDOSHelper::CombineSectorAddressMap(*sectorAddressMap, slotSectorAddressMap);
+					return true;
+					});
+
+				return sectorAddressMap;
+			}
+
+		private:
+			std::unique_ptr<sector_address_map> masterSectorAddressMap;
 		};
 
 	}
@@ -1113,7 +1336,7 @@ void dirSAVEMGT()
 	else if (cmphstr(lp, "basic")) mgtParseFnameAndExecuteCmd(dirSAVEMGTBasic);
 	else if (cmphstr(lp, "code")) mgtParseFnameAndExecuteCmd(dirSAVEMGTCode);
 	//else if (cmphstr(lp, "headless")) mgtParseFnameAndExecuteCmd(dirSAVEMGTHeadless);
-	else Error("[SAVEMGT] unknown command (commands: EMPTY, SAMDOS, BASIC, CODE)", lp, SUPPRESS);
+	else Error("[SAVEMGT] unknown command (commands: FORMAT, SAMDOS, BASIC, CODE)", lp, SUPPRESS);
 }
 
 static const byte _acsamdos2[MGT::SAMDOS::SAMDOS_SIZE] = {
