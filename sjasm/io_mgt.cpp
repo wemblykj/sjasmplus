@@ -263,9 +263,9 @@ namespace MGT {
 			assert(trackNo < PlusD::TRACKS_PER_DISK);
 
 			int logicalTrack = MapToImageTrack(trackNo);
-			int om_fileset = logicalTrack * PlusD::TRACK_SIZE;
+			int offset = logicalTrack * PlusD::TRACK_SIZE;
 
-			if (fseek(file, om_fileset, SEEK_SET) != 0) {
+			if (fseek(file, offset, SEEK_SET) != 0) {
 				seekError(GetErrorContext());
 				return Result::Error;
 			}
@@ -287,11 +287,11 @@ namespace MGT {
 			assert(trackNo < 160 && sectorNo < 10);
 
 			int logicalTrack = MapToImageTrack(trackNo);
-			int om_fileset = logicalTrack * PlusD::TRACK_SIZE;
+			int offset = logicalTrack * PlusD::TRACK_SIZE;
 
-			om_fileset += sectorNo * PlusD::SECTOR_SIZE;
+			offset += sectorNo * PlusD::SECTOR_SIZE;
 
-			if (fseek(file, om_fileset, SEEK_SET) != 0) {
+			if (fseek(file, offset, SEEK_SET) != 0) {
 				seekError(GetErrorContext());
 				return Result::Error;
 			}
@@ -309,11 +309,11 @@ namespace MGT {
 			assert(trackNo < 160 && sectorNo < 10);
 
 			int logicalTrack = MapToImageTrack(trackNo);
-			int om_fileset = logicalTrack * PlusD::TRACK_SIZE;
+			int offset = logicalTrack * PlusD::TRACK_SIZE;
 
-			om_fileset += sectorNo * PlusD::SECTOR_SIZE;
+			offset += sectorNo * PlusD::SECTOR_SIZE;
 
-			if (fseek(file, om_fileset, SEEK_SET) != 0) {
+			if (fseek(file, offset, SEEK_SET) != 0) {
 				seekError(GetErrorContext());
 				return Result::Error;
 			}
@@ -506,6 +506,15 @@ namespace MGT {
 			{}
 		};
 
+		struct file_header {
+			FileType fileType;			// 0   - File type
+			word_le_t moduloLength;     // 1-2 - Length of file, MOD 16384
+			word_le_t offsetStart;      // 3-4 - Start address
+			word unused;				// 5-6
+			byte numPages;              // 7   - Number of pages in length
+			page_bits startPageNo;      // 8   - Start page number
+		};
+
 		struct sector_address_map {
 			byte bytes[195];
 
@@ -592,8 +601,8 @@ namespace MGT {
 			FileTypeAndStatus typeStatus;   // Status and file type
 			char name[10];                  // File name
 			word_be_t sectorsUsed;      // 11-12
-			byte trackNo;                   // 13
-			byte sectorNo;                  // 14      
+			byte startTrackNo;                   // 13
+			byte startSectorNo;                  // 14      
 			sector_address_map sectorAddressMap;
 			byte future_and_past[10];       // 210-219 - MGT FUTURE AND PAST (10 bytes)
 			byte flags;                     // 220     - Flags (MGT use only)
@@ -730,11 +739,8 @@ namespace MGT {
 		public:
 			static void GetPageAndOffset(int address, byte& page, word& offset)
 			{
-				// TODO: may not be correct if start address < 16384
-				assert(address >= 16384);
-
-				page = static_cast<byte>((address >> 14) - 1);
-				offset = static_cast<word_le_t>(address & 0x4000);
+				page = static_cast<byte>((address + 16383) >> 14) - 1;
+				offset = static_cast<word>(address % 0x4000);
 			}
 
 			static void GetPageAndOffset(int address, page_bits& pageBits, word_le_t& offset)
@@ -749,7 +755,18 @@ namespace MGT {
 
 				switch (fileType) {
 				case FileType::Code:
-					GetPageAndOffset(startaddr, executionAddress.code.page, executionAddress.code.offset);
+					
+					byte page;
+					word offset;
+					GetPageAndOffset(startaddr, page, offset);
+
+					// TODO: what to do if start address is less than 32768 (should we keep in range and adjust page
+					// execution page appears to be one page higher than the start page (assuming we should wrap after last available page)
+					page = (page + 1) % Device->PagesCount;
+					offset = 32768 + (offset % 16384);
+					
+					executionAddress.code.offset = offset;
+					executionAddress.code.page.page = page;
 					break;
 				case FileType::BASIC:
 					executionAddress.basic.lineNumber = static_cast<word_le_t>(startaddr);
@@ -1064,7 +1081,7 @@ namespace MGT {
 					}
 				}
 
-				int numSectors = (length + (sizeof(LogicalSector::data) - 1)) / sizeof(LogicalSector::data);
+				int numSectors = (sizeof(file_header) + length + (sizeof(LogicalSector::data) - 1)) / sizeof(LogicalSector::data);
 				
 				SectorAllocationList sal;
 				if (SAMDOSHelper::FindFreeSectors(GetSectorAddressMap(), numSectors, sal) != Result::Success) {
@@ -1073,13 +1090,19 @@ namespace MGT {
 					return Result::Error;
 				}
 
-				WriteData(buf, length, sal);
+				file_header header;
+				header.fileType = fileType;
+
+				SAMDOSHelper::GetPageAndOffset(memaddr, header.startPageNo, header.offsetStart);
+				SAMDOSHelper::GetPageAndOffset(length, header.numPages, header.moduloLength);
+
+				WriteHeaderAndData(header, buf, length, sal);
 
 				//
 				// write directory entry
 
-				descriptor.entry.trackNo = sal[0].trackNo;
-				descriptor.entry.sectorNo = sal[0].sectorNo;
+				descriptor.entry.startTrackNo = sal[0].trackNo;
+				descriptor.entry.startSectorNo = 1 + sal[0].sectorNo;	// sector numbers appear to be one-indexed
 				descriptor.entry.sectorsUsed = sal.size();
 
 				descriptor.entry.typeStatus.fileType = fileType;
@@ -1090,6 +1113,7 @@ namespace MGT {
 				memcpy(descriptor.entry.name, paddedName, NameLen);
 
 				SAMDOSHelper::GetPageAndOffset(memaddr, descriptor.entry.startPageNo, descriptor.entry.pageOffset);
+				SAMDOSHelper::GetPageAndOffset(length, descriptor.entry.numPages, descriptor.entry.moduloLength);
 
 				descriptor.entry.executionAddress = SAMDOSHelper::GetExecutionAddress(fileType, startaddr);
 
@@ -1103,32 +1127,46 @@ namespace MGT {
 				return Result::Success;
 			}
 
-			Result WriteData(const byte* buf, word length, SectorAllocationList sal) {
-				const byte* bufPtr = buf;
-				word remaining = length;
+			Result WriteHeaderAndData(const file_header& header, const byte* data, word length, SectorAllocationList sal) {
+				const byte* dataPtr = data;
+				word dataBytesRemaining = length;
 				auto salIt = sal.cbegin();
 
-				while (remaining > 0) {
+				bool writeHeader = true;
+
+				while (dataBytesRemaining > 0) {
+					LogicalSector sector;
+
 					byte trackNo = salIt->trackNo;
 					byte sectorNo = salIt->sectorNo;
 
-					word numBytes = std::min<word>(remaining, 510);
+					word sectorBytesRemaining = sizeof(LogicalSector::data);
 
-					LogicalSector sector;
+					byte* targetPtr = sector.data;
 
-					memcpy(sector.data, bufPtr, numBytes);
+					// TODO: handler header more elegantly
+					if (writeHeader) {
+						memcpy(targetPtr, reinterpret_cast<const void*>(&header), sizeof(file_header));
+						targetPtr += sizeof(file_header);
+						sectorBytesRemaining -= sizeof(file_header);
+						writeHeader = false;
+					}
+
+					word dataBytesToWrite = std::min<word>(dataBytesRemaining, sectorBytesRemaining);
+
+					memcpy(targetPtr, dataPtr, dataBytesToWrite);
 
 					if (++salIt != sal.cend()) {
 						sector.nextTrack = salIt->trackNo;
-						sector.nextSector = salIt->sectorNo;
+						sector.nextSector = 1 + salIt->sectorNo;	// sector numbers appear to be one-indexed
 					}
 
 					if (GetDiskInterface().WriteSector(trackNo, sectorNo, sector.rawSector) != Result::Success) {
 						return Result::Error;
 					}
 
-					bufPtr += numBytes;
-					remaining -= numBytes;
+					dataPtr += dataBytesToWrite;
+					dataBytesRemaining -= dataBytesToWrite;
 				}
 
 				return Result::Success;
@@ -1216,7 +1254,7 @@ static void SaveMGT_SamDos(const std::filesystem::path& fname) {
 
 	MGT::DiskInterfacePtr diskInterface = std::make_unique<MGT::UncompressedMgtImageDiskInterface>(fname, ff);
 	if (diskInterface != nullptr)
-		GetDOSInterface(std::move(diskInterface))->SaveCode(SAMDOSBootFileName, GetSAMDOSImage(), SAMDOS_SIZE, 0x4000, 0xFFFF);
+		GetDOSInterface(std::move(diskInterface))->SaveCode(SAMDOSBootFileName, GetSAMDOSImage(), SAMDOS_SIZE, 0x8000, 0xFFFF);
 	
 	fclose(ff);
 }
