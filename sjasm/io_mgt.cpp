@@ -37,6 +37,7 @@
 // io_mgt.cpp
 
 #include <functional>
+#include <optional>
 
 #include "sjdefs.h"
 
@@ -366,7 +367,7 @@ namespace MGT {
 		/// <param name="fileName"></param>
 		/// <param name="startAddr"></param>
 		/// <param name="length"></param>
-		virtual void SaveBASIC(const std::string& fileName, const byte* buf, word length, word startAddr) = 0;
+		virtual void SaveBASIC(const std::string& fileName, const byte* buf, word length, word startAddr, std::optional<word> startLineNo) = 0;
 
 		/// <summary>
 		/// Write a code file to the disk.
@@ -376,7 +377,7 @@ namespace MGT {
 		/// <param name="startAddr"></param>
 		/// <param name="length"></param>
 		/// <param name="entryAddr"></param>
-		virtual void SaveCode(const std::string& fileName, const byte* buf, word length, word startAddr, word entryAddr) = 0;
+		virtual void SaveCode(const std::string& fileName, const byte* buf, word length, word startAddr, std::optional<word> entryAddr) = 0;
 	};
 
 	/// <summary>
@@ -737,40 +738,52 @@ namespace MGT {
 
 		static class SAMDOSHelper {
 		public:
-			static void GetPageAndOffset(int address, byte& page, word& offset)
+			// Get the zero indexed page number and modulo offset
+			static void GetNumPagesAndLength(int address, byte& pages, word& moduloLength)
 			{
-				page = static_cast<byte>((address + 16383) >> 14) - 1;
-				offset = static_cast<word>(address % 0x4000);
+				pages = static_cast<byte>(((address + 16383) >> 14 - 1) % 1);
+				moduloLength = static_cast<word>(address % 0x4000);
 			}
 
-			static void GetPageAndOffset(int address, page_bits& pageBits, word_le_t& offset)
+			// Get the zero indexed page number and modulo offset
+			static void GetStartPageAndOffset(int address, page_bits& pageBits, word_le_t& offset)
 			{
-				byte page;
-				GetPageAndOffset(address, page, offset);
-				pageBits.page = page;
+				int adjusted = address - 0x4000;
+				pageBits.page = static_cast<byte>((adjusted >> 14) % 32);
+
+				// offset is always bound to 0x8000 -> 0xBFFF
+				offset = static_cast<word>(0x8000 + (adjusted % 0x4000));
 			}
 
-			static autorun GetExecutionAddress(FileType fileType, int startaddr) {
+			static autorun GetExecutionAddress(FileType fileType, std::optional<word> entry) {
 				autorun executionAddress;
 
 				switch (fileType) {
-				case FileType::Code:
-					
-					byte page;
-					word offset;
-					GetPageAndOffset(startaddr, page, offset);
+				case FileType::Code: 
+					if (entry.has_value()) {
+						page_bits pageBits;
+						word offset;
+						GetStartPageAndOffset(entry.value(), pageBits, offset);
 
-					// TODO: what to do if start address is less than 32768 (should we keep in range and adjust page
-					// execution page appears to be one page higher than the start page (assuming we should wrap after last available page)
-					page = (page + 1) % Device->PagesCount;
-					offset = 32768 + (offset % 16384);
-					
-					executionAddress.code.offset = offset;
-					executionAddress.code.page.page = page;
+						// execution page appears to be one page higher than the start page, is assume this is simply 
+						// page number appears to be modulo 32 irrespective of physical memory constraints (i.e. even on 256K model)
+						executionAddress.code.page.page = (pageBits.page + 1) % 32;
+						executionAddress.code.offset = offset;
+					}
+					else {
+						executionAddress.code.page.page = 31;
+						executionAddress.code.offset = 0xFFFF;
+					}
 					break;
 				case FileType::BASIC:
-					executionAddress.basic.lineNumber = static_cast<word_le_t>(startaddr);
-					executionAddress.basic.autorun = startaddr != 0xFFFF ? AutorunType::Autorun : AutorunType::None;
+					if (entry.has_value()) {
+						executionAddress.basic.lineNumber = static_cast<word_le_t>(entry.value());
+						executionAddress.basic.autorun = AutorunType::Autorun;
+					}
+					else {
+						executionAddress.basic.lineNumber = 0xFFFF;
+						executionAddress.basic.autorun =  AutorunType::None;
+					}
 					break;
 				case FileType::Erased:
 				case FileType::DIM:
@@ -869,12 +882,12 @@ namespace MGT {
 				GPlusDOSInterface(std::move(diskInterface)) {
 			}
 
-			void SaveBASIC(const std::string& fileName, const byte* buf, word length, word startAddr) override {
-				WriteFile(fileName, FileType::BASIC, buf, length, startAddr, startAddr);
+			void SaveBASIC(const std::string& fileName, const byte* buf, word length, word startAddr, std::optional<word> startLineNo) override {
+				WriteFile(fileName, FileType::BASIC, buf, length, startAddr, startLineNo);
 			}
 
-			void SaveCode(const std::string& fileName, const byte* buf, word length, word startAddr, word entryAddr) override {
-				WriteFile(fileName, FileType::Code, buf, length, startAddr, startAddr);
+			void SaveCode(const std::string& fileName, const byte* buf, word length, word memAddr, std::optional<word> entryAddr) override {
+				WriteFile(fileName, FileType::Code, buf, length, memAddr, entryAddr);
 			}
 
 		private:
@@ -1070,7 +1083,7 @@ namespace MGT {
 	
 			Result WriteFile(
 				const std::string& fileName,
-				FileType fileType, const byte* buf, word length, word memaddr, word startaddr) {
+				FileType fileType, const byte* buf, word length, word memAddr, std::optional<word> entry) {
 				DirectorySlot descriptor;
 
 				if (FindFileSlot(fileName.c_str(), descriptor) != Result::Success) {
@@ -1093,8 +1106,8 @@ namespace MGT {
 				file_header header;
 				header.fileType = fileType;
 
-				SAMDOSHelper::GetPageAndOffset(memaddr, header.startPageNo, header.offsetStart);
-				SAMDOSHelper::GetPageAndOffset(length, header.numPages, header.moduloLength);
+				SAMDOSHelper::GetStartPageAndOffset(memAddr, header.startPageNo, header.offsetStart);
+				SAMDOSHelper::GetNumPagesAndLength(length, header.numPages, header.moduloLength);
 
 				WriteHeaderAndData(header, buf, length, sal);
 
@@ -1112,10 +1125,10 @@ namespace MGT {
 				snprintf(paddedName, sizeof(paddedName), "%-*s", NameLen, fileName.c_str());
 				memcpy(descriptor.entry.name, paddedName, NameLen);
 
-				SAMDOSHelper::GetPageAndOffset(memaddr, descriptor.entry.startPageNo, descriptor.entry.pageOffset);
-				SAMDOSHelper::GetPageAndOffset(length, descriptor.entry.numPages, descriptor.entry.moduloLength);
+				SAMDOSHelper::GetStartPageAndOffset(memAddr, descriptor.entry.startPageNo, descriptor.entry.pageOffset);
+				SAMDOSHelper::GetNumPagesAndLength(length, descriptor.entry.numPages, descriptor.entry.moduloLength);
 
-				descriptor.entry.executionAddress = SAMDOSHelper::GetExecutionAddress(fileType, startaddr);
+				descriptor.entry.executionAddress = SAMDOSHelper::GetExecutionAddress(fileType, entry);
 
 				SAMDOSHelper::AllocateSectors(sal, descriptor.entry.sectorAddressMap);
 
@@ -1259,7 +1272,7 @@ static void SaveMGT_SamDos(const std::filesystem::path& fname) {
 	fclose(ff);
 }
 
-static void SaveMGT_BASIC(const std::filesystem::path& fname, const std::string& tfname, aint startAddr, aint length) {
+static void SaveMGT_BASIC(const std::filesystem::path& fname, const std::string& tfname, aint memAddr, aint length, std::optional<aint> startLineNo) {
 	using namespace MGT::SAMDOS;
 
 	FILE* ff;
@@ -1268,16 +1281,16 @@ static void SaveMGT_BASIC(const std::filesystem::path& fname, const std::string&
 		return;
 	}
 
-	std::unique_ptr<byte[]> data(getContigRAM(startAddr, length));
+	std::unique_ptr<byte[]> data(getContigRAM(memAddr, length));
 
 	MGT::DiskInterfacePtr diskInterface = std::make_unique<MGT::UncompressedMgtImageDiskInterface>(fname, ff);
 	if (diskInterface != nullptr)
-		GetDOSInterface(std::move(diskInterface))->SaveBASIC(tfname, data.get(), length, static_cast<word>(startAddr));
+		GetDOSInterface(std::move(diskInterface))->SaveBASIC(tfname, data.get(), length, static_cast<word>(memAddr), startLineNo);
 	
 	fclose(ff);
 }
 
-static void SaveMGT_Code(const std::filesystem::path& fname, const std::string& tfname, aint startAddr, aint length, aint entryAddr) {
+static void SaveMGT_Code(const std::filesystem::path& fname, const std::string& tfname, aint memAddr, aint length, std::optional<aint> entryAddr) {
 	using namespace MGT::SAMDOS;
 
 	FILE* ff;
@@ -1286,11 +1299,11 @@ static void SaveMGT_Code(const std::filesystem::path& fname, const std::string& 
 		return;
 	}
 
-	std::unique_ptr<byte[]> data(getContigRAM(startAddr, length));
+	std::unique_ptr<byte[]> data(getContigRAM(memAddr, length));
 
 	MGT::DiskInterfacePtr diskInterface = std::make_unique<MGT::UncompressedMgtImageDiskInterface>(fname, ff);
 	if (diskInterface != nullptr)
-		GetDOSInterface(std::move(diskInterface))->SaveCode(tfname, data.get(), static_cast<word>(length), static_cast<word>(startAddr), static_cast<word>(entryAddr));
+		GetDOSInterface(std::move(diskInterface))->SaveCode(tfname, data.get(), static_cast<word>(length), static_cast<word>(memAddr), static_cast<std::optional<word>>(entryAddr));
 
 	fclose(ff);
 }
@@ -1312,7 +1325,7 @@ static void dirSAVEMGTFormat(const std::filesystem::path & mgtname) {
 }
 
 static void dirSAVEMGTBasic(const std::filesystem::path & mgtname) {
-	constexpr const char* argerr = "[SAVEMGT] Invalid args. SAVEMGT BASIC <mgtname>,<name>,<start>,<length>";
+	constexpr const char* argerr = "[SAVEMGT] Invalid args. SAVEMGT BASIC <mgtname>,<name>,<start>,<length>,<autorunLineNo>";
 
 	if (!anyComma(lp)) {
 		Error(argerr, lp, SUPPRESS); return;
@@ -1323,34 +1336,42 @@ static void dirSAVEMGTBasic(const std::filesystem::path & mgtname) {
 		Error(argerr, lp, SUPPRESS); return;
 	}
 
-	aint args[] = { /*0:start*/ 0, /*1:length*/ 0 };
-	bool opt[] = { false, false };
-	if (!getIntArguments<2>(lp, args, opt) || args[0] < 0 || args[1] < 1 || 0x10000 <= args[1] || 0x10000 < (args[0]+args[1])) {
-		Error(argerr, lp, SUPPRESS); return;
-	}
-
-	SaveMGT_BASIC(mgtname, tfname, args[0], args[1]);
-}
-
-static void dirSAVEMGTCode(const std::filesystem::path & mgtname) {
-	constexpr const char* argerr = "[SAVEMGT] Invalid args. SAVEMGT CODE <mgtname>,<name>,<start>,<length>[,<customstartaddress>]";
-
-	if (!anyComma(lp)) {
-		Error(argerr, lp, SUPPRESS); return;
-	}
-
-	const std::string tfname = GetDelimitedString(lp);
-	if (!anyComma(lp)) {
-		Error(argerr, lp, SUPPRESS); return;
-	}
-
-	aint args[] = { /*0:start*/ 0, /*1:length*/ 0, /*2:customStart*/ -1 };
+	aint args[] = { /*0:start*/ 0, /*1:length*/ 0, /*2:autorunLineNo*/ -1};
 	bool opt[] = { false, false, true };
 	if (!getIntArguments<3>(lp, args, opt) || args[0] < 0 || args[1] < 1 || 0x10000 <= args[1] || 0x10000 < (args[0]+args[1])) {
 		Error(argerr, lp, SUPPRESS); return;
 	}
 
-	SaveMGT_Code(mgtname, tfname, args[0], args[1], args[2]);
+	std::optional<aint> autorunLineNo;
+	if (args[2] != -1)
+		autorunLineNo = args[2];
+
+	SaveMGT_BASIC(mgtname, tfname, args[0], args[1], autorunLineNo);
+}
+
+static void dirSAVEMGTCode(const std::filesystem::path & mgtname) {
+	constexpr const char* argerr = "[SAVEMGT] Invalid args. SAVEMGT CODE <mgtname>,<name>,<start>,<length>[,<executionAddress>]";
+
+	if (!anyComma(lp)) {
+		Error(argerr, lp, SUPPRESS); return;
+	}
+
+	const std::string tfname = GetDelimitedString(lp);
+	if (!anyComma(lp)) {
+		Error(argerr, lp, SUPPRESS); return;
+	}
+
+	aint args[] = { /*0:start*/ 0, /*1:length*/ 0, /*2:executionAddress*/ -1 };
+	bool opt[] = { false, false, true };
+	if (!getIntArguments<3>(lp, args, opt) || args[0] < 0 || args[1] < 1 || 0x10000 <= args[1] || 0x10000 < (args[0]+args[1])) {
+		Error(argerr, lp, SUPPRESS); return;
+	}
+
+	std::optional<aint> executionAddress;
+	if (args[2] != -1)
+		executionAddress = args[2];
+
+	SaveMGT_Code(mgtname, tfname, args[0], args[1], executionAddress);
 }
 
 static void dirSAVEMGTSamDos(const std::filesystem::path& mgtname) {
