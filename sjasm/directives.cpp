@@ -51,7 +51,18 @@ int ParseDirective(bool beginningOfLine)
 		return 0;
 	}
 
-	if (DirectivesTable.zoek(n)) return 1;
+	if (DirectivesTable.zoek(n)) {
+		if (!IsDirectiveSupported(n)) {
+			if (Dialect->IsStrict) {
+				Error("Directive not allowed for the current dialect", n, SUPPRESS);
+				return 0;
+			}
+
+			Warning("Directive is unsupported for the current dialect", n, W_EARLY);
+		}
+		
+		return 1;
+	}
 
 	// Only "." repeat directive remains, but that one can't start at beginning of line (without --dirbol)
 	const bool isDigitDot = ('.' == *n) && isdigit((byte)n[1]);
@@ -305,13 +316,23 @@ static void dirORG() {
 	dirPageImpl("ORG");
 }
 
+static void dirDISPImpl(const char* const dirName, aint valAdr, aint valPageNum) {
+	dispPageNum = valPageNum;
+	// crop (with warning) address in device or non-longptr mode to 16bit address range
+	if ((DeviceID || !Options::IsLongPtr) && !check16u(valAdr)) valAdr &= 0xFFFF;
+	// everything is valid, switch to DISP mode (dispPageNum is already set above)
+	adrdisp = CurAddress;
+	CurAddress = valAdr;
+	PseudoORG = Relocation::type ? DISP_INSIDE_RELOCATE : DISP_ACTIVE;
+}
+
 static void dirDISP() {
 	if (DISP_NONE != PseudoORG) {
 		Warning("[DISP] displacement inside another displacement block, ignoring it.");
 		SkipToEol(lp);
 		return;
 	}
-	aint valAdr, valPageNum;
+	aint valAdr, valPageNum = LABEL_PAGE_UNDEFINED;
 	// parse+validate values first, don't even switch into DISP mode in case of any error
 	Relocation::isResultAffected = false;
 	if (!ParseExpressionNoSyntaxError(lp, valAdr)) {
@@ -336,16 +357,9 @@ static void dirDISP() {
 			ErrorInt("[DISP] <page number> is out of range", valPageNum);
 			return;
 		}
-		dispPageNum = valPageNum;
-	} else {
-		dispPageNum = LABEL_PAGE_UNDEFINED;
 	}
-	// crop (with warning) address in device or non-longptr mode to 16bit address range
-	if ((DeviceID || !Options::IsLongPtr) && !check16u(valAdr)) valAdr &= 0xFFFF;
-	// everything is valid, switch to DISP mode (dispPageNum is already set above)
-	adrdisp = CurAddress;
-	CurAddress = valAdr;
-	PseudoORG = Relocation::type ? DISP_INSIDE_RELOCATE : DISP_ACTIVE;
+
+	dirDISPImpl("DISP", valAdr, valPageNum);
 }
 
 static void dirENT() {
@@ -1483,7 +1497,8 @@ static void dirINCLUDE() {
 		ListFile();
 		IncludeFile(fnaam);
 		donotlist = 1;
-	} else {
+	}
+	else {
 		Error("[INCLUDE] empty filename", bp);
 	}
 }
@@ -2148,6 +2163,128 @@ static void dirSLDOPT() {
 	}
 }
 
+static const char* DEFDIALECT_SYNTAX_ERR = "[DEFDIALECT] expected syntax is <dialectid>, <base_dialect_id>, <feature>[, ...]";
+
+static void dirDEFDIALECT() {
+	//DEFDIALECT <dialectid>, <base_dialect_id>, <feature>[, ...]]
+	const char* id = GetID(lp);
+	if (!id) {
+		Error(DEFDIALECT_SYNTAX_ERR, bp, SUPPRESS);
+		return;
+	}
+
+	const bool is_defined = std::any_of(
+		DefDialects.begin(), DefDialects.end(),
+		[&](const CDialectDef* el) { return 0 == strcasecmp(id, el->getID()); }
+	);
+	if (is_defined || 1 < pass) {
+		// same id defined twice during first pass?
+		if (pass <= 1) Error("[DEFDIALECT] dialect with such ID is already defined", id, EARLY);
+		// in later passes ignore the line, DEFDIALECT works only in first pass
+		SkipToEol(lp);
+		return;
+	}
+
+	const char* base_id = GetID(lp);
+	if (!id) {
+		Error(DEFDIALECT_SYNTAX_ERR, bp, SUPPRESS);
+		return;
+	}
+
+	auto findIt = std::find_if(
+		DefDialects.begin(), DefDialects.end(),
+		[&](const CDialectDef* el) { return 0 == strcasecmp(base_id, el->getID()); }
+	);
+
+	if (findIt == DefDialects.end()) {
+		Error("[DEFDIALECT] base dialect not found. If unsure, use and adapt 'SJASMPLUS'", base_id, EARLY);
+		return;
+	}
+
+	const CDialectDef& base_dialect = *(*findIt);
+
+	DefDialects.push_back(new CDialectDef(id,
+		base_dialect.BasePrefixes,
+		base_dialect.BaseSuffixes,
+		base_dialect.GroupingSeparator,
+		base_dialect.DirectiveStrategy,
+		base_dialect.DirectiveList,
+		base_dialect.DefaultOrg));
+
+	CDialectDef& dev = *DefDialects.back();
+}
+
+static void dirDIALECT() {
+	// refresh source position of first DIALECT directive
+	if (1 == ++dialectDirectivesCount) {
+		assert(!sourcePosStack.empty());
+		globalDialectSourcePos = sourcePosStack.back();
+	}
+
+	char* id = GetID(lp);
+	if (id) {
+		bool isStrict = true;	// assume true for now
+
+		if (anyComma(lp)) {
+			// TODO: Parse options, e.g. STRICT keyword?
+		}
+		// if (1 == dialectDirectivesCount && Dialect->Next) -> dialect was already set globally, skip SetDialect
+		if (1 < dialectDirectivesCount || !Dialects->Next) {
+			if (!SetDialect(id, isStrict)) {
+				Error("[DIALECT] Invalid parameter", id, IF_FIRST);
+			}
+			
+			// set defaults
+			if (Dialect->DefaultOrg > 0) {
+				CurAddress = Dialect->DefaultOrg;
+			}
+		}
+	}
+	else {
+		Error("[DIALECT] Syntax error in <dialectid>", lp, SUPPRESS);
+	}
+}
+
+static void dirDUMP() {
+	if (!DeviceID) {
+		Warning("DUMP only allowed in real device emulation mode (See DEVICE)");
+		SkipToEol(lp);
+		return;
+	}
+	// TODO: Not sure how to best to handle relocation
+	if (PseudoORG == DISP_INSIDE_RELOCATE) {
+		Error("DUMP is not supported inside a relocatable block");
+		SkipToEol(lp);
+		return;
+	}
+
+	aint valAdr, valPageNum = LABEL_PAGE_UNDEFINED;
+
+	if (!ParseExpressionNoSyntaxError(lp, valAdr)) {
+		Error("[DUMP] Syntax error in [<page_number>], <offset>", lp, SUPPRESS);
+		SkipToEol(lp);
+		return;
+	}
+
+	if (IsCometDialect(DialectID))
+	{
+		// first argument is page number, second is offset
+		if (anyComma(lp)) {
+			aint secondArg;
+			if (!ParseExpressionNoSyntaxError(lp, secondArg)) {
+				Error("Syntax error in [<page_number>], <offset>", lp, SUPPRESS);
+				SkipToEol(lp);
+				return;
+			}
+
+			valPageNum = valAdr;
+			valAdr = secondArg;
+		}
+	}
+	
+	dirDISPImpl("DUMP", valAdr, valPageNum);
+}
+
 void InsertDirectives() {
 	DirectivesTable.insertd(".assert", dirASSERT);
 	DirectivesTable.insertd(".byte", dirBYTE);
@@ -2277,6 +2414,18 @@ void InsertDirectives() {
 	DirectivesTable_dup.insertd(".endw", dirEDUP);
 	DirectivesTable_dup.insertd(".rept", dirDUP);
 	DirectivesTable_dup.insertd(".while", dirWHILE);
+
+	// dialect support
+	DirectivesTable.insertd(".dialect", dirDIALECT);
+	DirectivesTable.insertd(".defdialect", dirDEFDIALECT);
+
+	// Comet for Sam Coupe directives
+	DirectivesTable.insertd(".dump", dirDUMP);	// displace with nuances
+	// DirectivesTable.insertd(".inc", dirINCLUDE); // cannot support without further work to disambiguate from INC instruction
+	DirectivesTable.insertd(".mdat", dirINCBIN);
+
+	// SC_Assembler for Sam Coupe directives
+	DirectivesTable.insertd(".put", dirDISP);
 }
 
 //eof direct.cpp

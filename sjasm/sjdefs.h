@@ -56,6 +56,7 @@
 #include <stack>
 #include <vector>
 #include <map>
+#include <set>
 #include <filesystem>
 #include <iostream>
 using std::cout;
@@ -68,6 +69,7 @@ using std::flush;
 #include <ctype.h>
 #include <limits.h>
 #include <math.h>
+#include <regex>
 
 // global defines
 enum EDelimiterType { DT_NONE, DT_QUOTES, DT_APOSTROPHE, DT_ANGLE, DT_COUNT };
@@ -112,6 +114,7 @@ struct SAlignSafeCast {
 
 #include "lua_sjasm.h"
 #include "devices.h"
+#include "dialect.h"
 #include "support.h"
 #include "relocate.h"
 #include "tables.h"

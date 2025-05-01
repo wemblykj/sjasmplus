@@ -127,6 +127,14 @@ extern char* DeviceID;
 extern TextFilePos globalDeviceSourcePos;
 extern aint deviceDirectivesCount;
 
+// dialect support
+extern std::vector<CDialectDef*> DefDialects;
+extern CDialect* Dialects;
+extern CDialect* Dialect;
+extern char* DialectID;
+extern TextFilePos globalDialectSourcePos;
+extern aint dialectDirectivesCount;
+
 //*current* full file name (used as full for CurSourcePos when `--fullpath`)
 //content at this pointer is immutable and valid till assembler exits, so you can archive/reuse it
 //for example SLD tracing remembers original file where macro was defined by using pointer into this

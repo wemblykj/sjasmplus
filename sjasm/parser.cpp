@@ -70,7 +70,7 @@ static int ParseExpPrim(char*& p, aint& nval) {
 		return 1;
 	} else if (isdigit((byte)*p) && GetTemporaryLabelValue(p, nval, true)) {	// temporary label with underscore suffix
 		return 1;
-	} else if (isdigit((byte)*p) || (*p == '#' && isalnum((byte)*(p + 1))) || (*p == '$' && isalnum((byte)*(p + 1))) || *p == '%') {
+	} else if (isConstantStart(p)) {
 		return GetConstant(p, nval);
 	} else if (isLabelStart(p)) {
 		return GetLabelValue(p, nval);

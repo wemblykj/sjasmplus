@@ -63,6 +63,7 @@ int needa(char*& p, const char* c1, int r1, const char* c2 = 0, int r2 = 0, cons
 bool GetNumericValue_ProcessLastError(const char* const srcLine);
 bool GetNumericValue_TwoBased(char*& p, const char* const pend, aint& val, const int shiftBase);
 bool GetNumericValue_IntBased(char*& p, const char* const pend, aint& val, const int base);
+bool isConstantStart(const char* p);
 int GetConstant(char*& op, aint& val);
 int GetCharConst(char*& p, aint& val);
 int GetCharConstInDoubleQuotes(char*& op, aint& val);

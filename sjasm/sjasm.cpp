@@ -195,6 +195,15 @@ aint deviceDirectivesCount = 0;
 static char* globalDeviceID = nullptr;
 static aint globalDeviceZxRamTop = 0;
 
+// dialect support
+CDialect* Dialects = nullptr;
+CDialect* Dialect = nullptr;
+char* DialectID = nullptr;
+TextFilePos globalDialectSourcePos;
+aint dialectDirectivesCount = 0;
+static char* globalDialectID = nullptr;
+static bool globalDialectIsStrict = false;
+
 // extend
 fullpath_p_t fileNameFull = nullptr;
 char* lp, line[LINEMAX], temp[LINEMAX], * bp;
@@ -259,6 +268,36 @@ static void ReserveLabelKeywords() {
 	}
 }
 
+void InitDialects() {
+	// TODO: blindly duplicating device logic! Understand and adapt as required
+	// reset "dialect" stuff + detect "global dialect" directive
+	if (globalDialectID) {		// globalDialectID detector has to trigger before every pass
+		free(globalDialectID);
+		globalDialectID = nullptr;
+		globalDialectIsStrict = false;
+	}
+	if (1 < pass && 1 == dialectDirectivesCount && Dialects) {	// only single DEVICE used
+		globalDialectID = STRDUP(Dialects->ID);		// make it global for next pass
+		globalDialectIsStrict = Dialects->IsStrict;
+	}
+	if (Dialects) delete Dialects;
+	Dialects = Dialect = nullptr;
+	DialectID = nullptr;
+	Page = nullptr;
+	dialectDirectivesCount = 0;
+	// resurrect "global" dialect here
+	if (globalDialectID) {
+		sourcePosStack.push_back(globalDialectSourcePos);
+		if (!SetDialect(globalDialectID, globalDialectIsStrict)) {		// manually tested (remove "!")
+			Error("Failed to re-initialize global dialect", globalDialectID, FATAL);
+		}
+		sourcePosStack.pop_back();
+	} else {
+		SetDialect("SJASMPLUS", true);	// default dialect
+	}
+
+}
+
 void InitPass() {
 	assert(sourcePosStack.empty());				// there's no source position [left] in the stack
 	Relocation::InitPass();
@@ -312,6 +351,8 @@ void InitPass() {
 		sourcePosStack.pop_back();
 	}
 
+	InitDialects();
+
 	// predefined defines - (deprecated) classic sjasmplus v1.x (till v1.15.1)
 	DefineTable.Replace("_SJASMPLUS", "1");
 	DefineTable.Replace("_RELEASE", "0");
@@ -336,6 +377,17 @@ void InitPass() {
 	if (LASTPASS == pass) OpenExpFile();					// will not do anything if filename is empty
 }
 
+void FreeDialects() {
+	if (Dialects) {
+		delete Dialects;		Dialects = nullptr;
+	}
+	if (globalDialectID) {
+		free(globalDialectID);	globalDialectID = nullptr;
+	}
+	for (CDialectDef* deviceDef : DefDialects) delete deviceDef;
+	DefDialects.clear();
+}
+
 void FreeRAM() {
 	if (Devices) {
 		delete Devices;		Devices = nullptr;
@@ -345,6 +397,8 @@ void FreeRAM() {
 	}
 	for (CDeviceDef* deviceDef : DefDevices) delete deviceDef;
 	DefDevices.clear();
+	// TODO: can a condition be applied here? - e.g. num dialect directives?
+	FreeDialects();
 	lijstp = NULL;		// do not delete this, should be released by owners of DUP/regular macros
 	free(vorlabp);		vorlabp = NULL;
 	LabelTable.RemoveAll();

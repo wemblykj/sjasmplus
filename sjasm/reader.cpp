@@ -471,53 +471,74 @@ bool GetNumericValue_IntBased(char*& p, const char* const pend, aint& val, const
 	return (NULL == getNumericValueLastErr);
 }
 
-// parses number literals, forces result to be confined into 32b (even on 64b platforms,
-// to have stable results in listings/tests across platforms).
-int GetConstant(char*& op, aint& val) {
-	// the input string has been already detected as numeric literal by ParseExpPrim
-	assert(isdigit((byte)*op) || '#' == *op || '$' == *op || '%' == *op);
-	// find end of the numeric literal (pointer is beyond last alfa/digit character
-	char* pend = op;
-	if ('#' == *pend || '$' == *pend || '%' == *pend) ++pend;
-	while (isalnum((byte)*pend) || ('\'' == *pend && isalnum((byte)pend[1]))) ++pend;
-	char* const hardEnd = pend;
-	bool has_decimal_part = ('.' == *hardEnd) && isalnum((byte)hardEnd[1]);
-	// check if the format is defined by prefix (#, $, %, 0x, 0X, 0b, 0B, 0q, 0Q)
-	char* p = op;
-	int shiftBase = 0, base = 0;
-	if ('#' == *p || '$' == *p) {
-		shiftBase = 4;
-		++p;
-	} else if ('0' == p[0] && 'x' == (p[1]|0x20)) {
-		shiftBase = 4;
-		p += 2;
-	} else if ('0' == p[0] && 'b' == (p[1]|0x20) && 'h' != (pend[-1]|0x20) ) {
-		shiftBase = 1;		// string 0b800h is hexadecimal, not binary (legacy compatibility)
-		p += 2;
-	} else if ('0' == p[0] && 'q' == (p[1]|0x20)) {
-		shiftBase = 3;
-		p += 2;
-	} else if ('%' == *p) {
-		shiftBase = 1;
-		++p;
-	}
-	// if the base is still undecided, check for suffix format specifier
-	if (0 == shiftBase) {
-		switch (pend[-1]|0x20) {
-			case 'h': --pend; shiftBase = 4;  has_decimal_part = false; break;
-			case 'q': --pend; shiftBase = 3;  has_decimal_part = false; break;
-			case 'o': --pend; shiftBase = 3;  has_decimal_part = false; break;
-			case 'b': --pend; shiftBase = 1;  has_decimal_part = false; break;
-			case 'd': --pend;      base = 10; has_decimal_part = false; break;
-			default:
-				base = 10;
-				break;
+bool isConstantStart(const char* p) {
+	// isdigit((byte)*p) || (*p == '#' && isalnum((byte) * (p + 1))) || (*p == '$' && isalnum((byte) * (p + 1))) || *p == '%'
+
+	if (isdigit((byte)*p)) return true;
+
+	for (auto prefixDef : Dialect->BasePrefixes) {
+		const std::string& prefix = prefixDef.first;
+		if (0 == strncmp(p, prefix.c_str(), prefix.length())) {
+			const int shiftBase = prefixDef.second;
+
+			p += prefix.length();	// next char after prefix
+			if (shiftBase == 4 && !isalnum((byte)*p)) return false;		// is valid hex char
+			return true; // could ensure isdigit((byte)*p) but original logic does not
 		}
 	}
-	if ('\'' == *p || '\'' == pend[-1]) {	// digit-group tick can't be first/last digit
+
+	return false;
+}
+
+// parses number literals, forces result to be confined into 32b (even on 64b platforms,
+// to have stable results in listings/tests across platforms).
+int GetConstantForgiving(char*& op, aint& val) {
+	// the input string has been already detected as numeric literal by ParseExpPrim
+
+	int base = 10;	// default base
+	int shiftBase = 0;	// will resolve to non-zero if non-decimal base detected
+
+	// check for base prefix
+	char* p = op;
+	for (auto prefixDef : Dialect->BasePrefixes) {
+		const std::string& prefix = prefixDef.first;
+		if (0 == strncmp(p, prefix.c_str(), prefix.length())) {
+			p += prefix.length();
+			shiftBase = prefixDef.second;
+			break;
+		}
+	}
+
+	if (Dialect->GroupingSeparator == *p) {	// digit-group tick can't be first/last digit
 		Error(getNumericValueErr_no_digit, op, SUPPRESS);
 		return 0;
 	}
+
+	char* pend = p;
+	while (isalnum((byte)*pend) || (Dialect->GroupingSeparator != '\0' && (Dialect->GroupingSeparator == *pend && isalnum((byte)pend[1])))) ++pend;
+
+	// check for base suffix
+	for (auto suffixDef : Dialect->BaseSuffixes) {
+		const std::string& suffix = suffixDef.first;
+		char* ptemp = pend - suffix.length();
+		if (ptemp > p && // expecting at least one or more digits before suffix
+			0 == strncmp(ptemp, suffix.c_str(), suffix.length())) {
+			pend = ptemp;
+			shiftBase = suffixDef.second;
+			break;
+		}
+	}
+
+	if (Dialect->GroupingSeparator != '\0' && Dialect->GroupingSeparator == *pend) {
+		// group tick can't be first/last digit
+		Error(getNumericValueErr_no_digit, op, SUPPRESS);
+	}
+	
+	char* const hardEnd = pend;
+	bool has_decimal_part = ('.' == *hardEnd) && isalnum((byte)hardEnd[1]);
+
+	// TODO: enforce support for decimal part for current dialect
+	
 	// parse the number into value
 	if (0 < shiftBase) {
 		if (!GetNumericValue_TwoBased(p, pend, val, shiftBase) && GetNumericValue_ProcessLastError(op))
@@ -536,7 +557,7 @@ int GetConstant(char*& op, aint& val) {
 	p = hardEnd + 1;
 	assert(isalnum((byte)*p));
 	pend = hardEnd + 2;
-	while (isalnum((byte)*pend) || ('\'' == *pend && isalnum((byte)pend[1]))) ++pend;
+	while (isalnum((byte)*pend) || (Dialect->GroupingSeparator != '\0' && (Dialect->GroupingSeparator == *pend && isalnum((byte)pend[1])))) ++pend;
 	aint fractionVal;
 	if (0 < shiftBase) {
 		GetNumericValue_TwoBased(p, pend, fractionVal, shiftBase);
@@ -555,6 +576,12 @@ int GetConstant(char*& op, aint& val) {
 	WarningById(fractionVal ? W_NON_ZERO_DECIMAL : W_ZERO_DECIMAL, op);
 	op = pend;
 	return 1;
+}
+
+// parses number literals, forces result to be confined into 32b (even on 64b platforms,
+// to have stable results in listings/tests across platforms).
+int GetConstant(char*& op, aint& val) {
+	return GetConstantForgiving(op, val);
 }
 
 // parse single character of double-quoted string (backslash does escape characters)
