@@ -16,6 +16,7 @@ set(UNITTESTPP_DIR "unittest-cpp")
 
 set(SOURCES
 	sjasm/devices.cpp
+	sjasm/dialect.cpp
 	sjasm/directives.cpp
 	sjasm/io_cpc.cpp
 	sjasm/io_err.cpp
